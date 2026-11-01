@@ -21,7 +21,7 @@ add_defines("COMMONLIB_RUNTIMECOUNT=3")
 target("NightVision")
     add_rules("commonlibf4.plugin", {
         name = "NightVision",
-        author = "AI Brain Proxy",
+        author = "Claude Code",
         description = "Night vision and thermal modes with colour presets, fitted per helmet and kept in the save.",
         plugin_template = path.join(os.projectdir(), "res/commonlibf4-plugin.cpp.in"),
     })
