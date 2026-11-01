@@ -1,0 +1,314 @@
+﻿<div align="center">
+
+# DearModdingUI API
+
+**Client-facing C ABI and header-only C++ integration library for DearModdingUI.**
+
+DearModdingUI-API enables Fallout 4 F4SE plugins to register settings pages,
+draw custom interfaces, and interact with the shared DearModdingUI host menu.
+
+<br>
+
+[![CI](https://img.shields.io/github/actions/workflow/status/Dear-Modding-FO4/DearModdingUI-API/xmake.yml?branch=main&style=for-the-badge&label=CI&logo=githubactions&logoColor=white)](https://github.com/Dear-Modding-FO4/DearModdingUI-API/actions/workflows/xmake.yml)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge)](LICENSE)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](xmake.lua)
+
+<sub>[Features](#features) · [Integration](#integration) · [Quick Example](#quick-example) · [Complete Example](#complete-example) · [Documentation](#documentation) · [Header Guide](#header-guide) · [License](#license)</sub>
+
+</div>
+
+---
+
+## Features
+
+- **No Dear ImGui dependencies**: Client plugins do not compile Dear ImGui sources or link against ImGui libraries.
+- **Header-only C++ client**: Include `<DearModdingUI/Client.h>` to handle discovery, registration, and drawing.
+- **Versioned C ABI**: Additive minor versions keep existing clients working across host updates. Breaking changes are batched into major versions, and schema generation enforces both rules.
+- **Familiar drawing facade**: Draw controls using `dmui::ui::*` functions that mirror familiar ImGui APIs.
+- **Host theming and layouts**: Built-in helpers for standardized settings rows, standalone fields, semantic feedback, color tones, and font scaling.
+
+---
+
+## Integration
+
+The C++ client negotiates automatically; operations newer than the host return `UNSUPPORTED_ABI`.
+
+### File images
+
+`Client::LoadImageFile(utf8Path)` returns an owned image in `LOADING` immediately.
+Use `QueryImage` for `READY`/`FAILED` and the failure result, and `ui::Image` to
+draw it. Loading and failed images are not drawn and do not set a UI error.
+Loading, query, and release are any-thread; GPU publication occurs only at a
+render-frame boundary. Releasing during loading cancels publication, and
+device changes automatically reload file images.
+
+Relative paths are under the game's `Data` directory and cannot escape it.
+Absolute local paths are allowed; UNC/network and device paths are rejected.
+The host opens the virtual Win32 path so MO2 redirection still applies.
+PNG/JPEG/BMP/GIF (first frame)/TIFF decode to straight RGBA8. DDS accepts single
+2D textures and mip chains in BC1-BC7 and common uncompressed formats, not
+arrays, cubemaps, volumes, or premultiplied alpha. sRGB tags are ignored so
+DDS stored colors match the PNG UNORM path.
+
+Limits are 8192 pixels per dimension, 64 MiB encoded/decoded, 32 queued jobs
+globally, and four per client. Capacity exhaustion returns `BUSY` without a
+handle. Failed handles retain `FILE_NOT_FOUND`, `ACCESS_DENIED`,
+`UNSUPPORTED_RESOURCE`, `IMAGE_TOO_LARGE`, `IMAGE_DECODE_FAILED`,
+`IMAGE_DEVICE_FAILED`, or `RESOURCE_EXHAUSTED` until released.
+
+### Popups and modals
+
+Inside a page callback, call `ui::OpenPopup(id)` once (set `open=true` for a modal) and draw each frame with
+`ui::PopupScope{id}` or `ui::ModalScope{id, open}`. The modal takes a `bool& open`,
+an optional `hasCloseButton` (true), and `WindowFlags` (AlwaysAutoResize).
+Successful raw `BeginPopup`/`BeginPopupModal` calls require `EndPopup`.
+`CloseCurrentPopup` closes one level; `IsPopupOpen` includes pending requests.
+
+IDs use the current ID stack with an additional page scope. Popup lifetimes
+belong to the calling page. Leaving the page, closing
+the menu, or callback failure closes its popups. One page or the host dialog
+service owns the modal chain; same-page nested modals are allowed. Host dialog
+requests return `BUSY` while another owner holds the chain. A blocked client
+begin returns false without error and retains its open request until the chain
+is free. Escape/controller B closes one level; the next modal begin updates
+`open` to false. Use `SetItemDefaultFocus` to override initial navigation focus.
+
+### Using CommonLibF4
+
+The [Dear-Modding-FO4 CommonLibF4 fork](https://github.com/Dear-Modding-FO4/commonlibf4) includes this repository as a public dependency. If your plugin uses that fork, you can include the headers directly without modifying build scripts:
+
+```cpp
+#include <DearModdingUI/Client.h>
+```
+
+### Standalone with xmake
+
+Add this repository as an include directory or target dependency:
+
+```lua
+includes("path/to/dearmoddingui-api")
+target("MyPlugin", function()
+    -- ...
+    add_deps("dearmoddingui-api", { public = true })
+end)
+```
+
+### Other build systems
+
+Add the `include/` directory of this repository to your compiler include search paths. C++20 or later is recommended.
+
+---
+
+## Quick Example
+
+Register your mod during F4SE `kPostPostLoad` after plugins have loaded:
+
+```cpp
+#include <DearModdingUI/Client.h>
+
+static dmui::Client g_client{
+    "my_mod_id",
+    "My Mod Display Name",
+    dmui::Version{ 1, 0 },
+    "sliders" // Optional Phosphor icon name
+};
+
+static bool g_enabled = true;
+static float g_scale = 1.0f;
+
+void InitializeUI()
+{
+    if (!g_client.Connect()) {
+        return;
+    }
+
+    g_client.AddPage({
+        .id = "general",
+        .displayName = "General Settings",
+        .iconName = "gear"
+    },
+    [] {
+        dmui::ui::TextUnformatted("Configure plugin options below:");
+        dmui::ui::Checkbox("Enable feature", &g_enabled);
+        dmui::ui::SliderScalar("Scale factor", &g_scale, 0.5f, 2.0f);
+    });
+}
+```
+
+---
+
+## Complete Example
+
+A fully featured, compilable sample plugin is provided in [`examples/plugin/`](examples/plugin/):
+
+- **Multiple categories & icons**: Organizes pages under structured headings with custom Phosphor icon glyphs.
+- **Reusable fields**: `FieldScope` supports standalone controls and `SettingsTableScope` rows, with feedback and Reset.
+- **Growable search input**: `Client::DrawSearchInput` accepts large same-frame edits without a default text cap.
+- **Large text viewing**: `TextViewRequest` borrows pre-indexed UTF-8 text for clipped, scrollable rendering and exact byte-offset navigation.
+- **Dropdown choices**: Typed combo selectors using `DrawChoice`.
+- **Status & telemetry**: Status banners with `DrawStyledText`, live key-value readouts via `DrawLabeledValue`, and real-time graphs with `dmui::ui::PlotLines`.
+- **Global actions & notifications**: Registers palette commands and triggers toast notifications.
+
+Build the example directly:
+
+```powershell
+xmake build example-plugin
+```
+
+### Host-owned automatic icons
+
+Use the client query when procedural drawing needs the host's current icon
+vocabulary:
+
+```cpp
+bool DrawDisplayHeading(dmui::Client& client)
+{
+    const auto glyph = client.ResolveIconGlyph(
+        "Display Settings", nullptr, "Graphics");
+    if (!glyph)
+        return false;
+    return client.DrawSectionHeader(
+        "Display Settings",
+        *glyph ? *glyph : DearModdingUI::PhosphorGlyph::kQuestion);
+}
+```
+
+An engaged zero means the host found no match. A missing optional host entry or
+other failure returns `std::nullopt`; the wrapper never falls back to its local
+header vocabulary. `SettingGroup` performs this query automatically whenever
+its `glyph` is zero. Mods need one rebuild to adopt this path, then later host
+vocabulary updates apply without rebuilding the mod. Explicit nonzero glyphs
+and divider groups bypass automatic resolution. The underlying C query is
+thread-safe and performs no rendering. The C++ wrapper has no render-thread
+requirement, but calls sharing one `Client` must be serialized because they
+update its `LastResult()`.
+
+---
+
+## Documentation
+
+- **[Controls Guide](docs/controls-guide.md)**: Visual guide and code snippets for `dmui::ui` widgets, settings tables, choice dropdowns, styled text, font roles, and notifications.
+- **[Full Specification](docs/specification.md)**: Deep dive into binary memory layouts, structure sizes, thread affinity rules, and ownership contracts.
+
+---
+
+## Header Guide
+
+| Header | Description |
+|---|---|
+| `<DearModdingUI/Client.h>` | High-level C++ client interface. Handles discovery, callbacks, and registration. |
+| `<DearModdingUI/TextInput.h>` | Frame-local owned text buffer with transactional fixed or growable storage. |
+| `<DearModdingUI/TextView.h>` | Large-text request state, match navigation, and wrapped jump-button layout. |
+| `<DearModdingUI/UI.h>` | Safe C++ drawing facade (`dmui::ui::*`). |
+| `<DearModdingUI/Presentation.h>` | Presentation umbrella for layout geometry, UI scopes, choice controls, and styled text helpers. |
+| `<DearModdingUI/Presentation/Layout.h>` | Reusable, renderer-independent geometry for icons, rows, and trailing actions. Also remains available through the legacy `<DearModdingUI/VisualDecisions.h>` include. |
+| `<DearModdingUI/API.h>` | Pure C ABI declarations for host interaction. |
+| `<DearModdingUI/CUIAPI.h>` | Low-level C function table for drawing primitives. |
+| `<DearModdingUI/Localization.h>` | `LocalizeString` values refreshed from the owner's translation files through the host. |
+| `<DearModdingUI/IconGlyphs.h>` | Phosphor glyph constants and offline catalog snapshot utilities. Prefer the host query for automatic client drawing. |
+
+---
+
+## Layout and panels
+
+The host owns default spacing and panel appearance. `ui::PanelScope` wraps
+`BeginPanel` / `EndPanel`; end only a begin that returned true. Panels clip their
+contents and use the `DMUI_ThemeColors::panel` surface, border, rounding, and padding.
+Zero size fills available width or fits content height; positive components are
+fixed, and negative components fill minus that amount. Scrolling is opt-in with
+`PanelFlags::kScrollable`; `kNoBackground` gives a layout-only panel.
+
+`GetStyleMetrics` exposes `sectionGap` and `panelPadding`. Consecutive panels use
+the section gap vertically and with default `SameLine()`. Override them through
+`PushStyleVar(StyleVar::kSectionGap, float)` or
+`PushStyleVar(StyleVar::kPanelPadding, Vec2)`, then `PopStyleVar`.
+Raw cursor positioning, explicit `SameLine` spacing, `Dummy`, and draw lists remain
+available. Rebuild ABI 2 clients for the added operations and metrics.
+
+## Custom draw lists
+
+Use theme colors so custom drawing follows the user's accent:
+`ui::GetColorU32(&DMUI_ThemeColors::accent)` or `ui::GetColorU32(ui::Color::kText)`.
+Both accept an alpha multiplier and apply live style alpha. For raw `0xRRGGBBAA`
+packing without style alpha, use `ui::ColorConvertFloat4ToU32(Vec4)`.
+`ui::GetThemeColors()` returns the current theme; `ui::GetStyleMetrics` supplies
+spacing, padding, frame rounding, and border thickness. Rebuild ABI 2 clients
+for the expanded style metrics and UI table.
+Theme colors have one ABI path: `DMUI_UIAPI::getThemeColors`.
+`Client::GetThemeColors` delegates to it; the host-table slot is removed.
+
+## Actions
+
+`AddAction` callbacks run inside the render-thread ImGui frame with the same scoped UI context and failure isolation as page callbacks; frame observers and hotkeys remain non-drawing.
+ABI 2 C action callbacks now return `DMUI_Result` (`OK` on success); rebuild clients.
+
+## Dialog sessions
+
+`dmui::DialogSession` owns one host dialog and is non-copyable/non-movable. Its
+`Submit` callback is `std::function<std::optional<std::string>(std::string_view)>`:
+return an error to show it and keep the dialog open, or `std::nullopt` to complete.
+Use `Open(Client&, const DMUI_DialogDescriptor&, Submit)`, then call `Poll()` once
+per frame in that client's render callback. It drains events until pending or
+terminal, including required text-buffer growth and terminal release. `Active()`
+reports ownership and `LastResult()` reports request, polling, resolution, and
+callback failures; `BUSY` does not replace an active session. Callback exceptions
+cancel the session and report `CALLBACK_FAILED` (`RESOURCE_EXHAUSTED` for allocation).
+`Cancel()` rejects unresolved submissions and consumes cancellation. Destroy or
+cancel active sessions in the same render-callback context; destruction cancels,
+and the `Client` must outlive the session.
+
+## Managed overlays
+
+`DMUI_OVERLAY_ANCHOR_SCREEN_POSITION` (ABI 2.2) takes `offset` as the overlay's
+top-left in screen pixels, the units of `size`, so clients position it exactly at
+any UI scale. See the [placement contract](docs/specification.md#managed-overlay-placement).
+`Client::ConfigureOverlay` treats `offset` and `size` as author defaults. The host
+restores the user's completed arrangement from its `imgui.ini`, keyed by stable
+client ID and page ID, even if that mod is absent in a later session. Only free
+overlays persist offset, in host-unscaled viewport units; anchored
+overlays retain the author's inset and persist size only. Saved offsets restore
+only when both saved and current anchors are free. Size uses the same pixel units
+as `QueryOverlay().size`, without content scaling.
+Changing a default applies that component once; unchanged configuration preserves
+the arrangement. `[[nodiscard]] bool Client::ResetOverlay(DMUI_PageHandle) noexcept`
+discards the saved arrangement and reapplies defaults once. Clients do not persist
+placement. Rebuild ABI 2 clients for the added host-table slot.
+
+`Client::RequestOverlayFocus(page)` makes a demanded managed overlay interactive
+while the shell stays closed: the host blocks game input and routes keyboard and
+mouse input to it until `ReleaseOverlayFocus`, Escape, the shell opening, or a game
+interruption. Poll `QueryOverlayFocus(page)` each frame to learn that focus ended and why.
+See the [focused overlay contract](docs/specification.md#focused-overlays-abi-21) (ABI 2.1).
+`ui::GetPointerState()` reports world clicks and wheel input that no DMUI window took, for picking
+(see [pointer state](docs/specification.md#pointer-state-abi-22), ABI 2.2).
+
+## Localization
+
+Pass translation keys such as `"$MyMod_General"` as registration display names, summaries,
+and action labels, and ship `Interface\Translations\<client id>_<language>.txt`, with
+`<client id>_en.txt` as the fallback; the host translates them when registration closes.
+Translate drawn text with `Client::Localize(clientId, key, fallback)`, ideally once in
+`onHostReady`. See the [localization contract](docs/specification.md#localization-abi-22) (ABI 2.2).
+
+## Verification
+
+Build the test suites and example plugin:
+
+```powershell
+xmake
+xmake build api-header-checks
+xmake build example-plugin
+```
+
+The checked-in Phosphor vocabulary is regenerated offline from pinned source
+snapshots:
+
+```powershell
+python Tools/GeneratePhosphorGlyphs.py --check
+```
+
+---
+
+## License
+
+DearModdingUI-API is licensed under GPL-3.0. See [LICENSE](LICENSE).

@@ -1,0 +1,114 @@
+name: xmake
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Add MSVC to PATH
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Set up xmake
+      uses: xmake-io/github-action-setup-xmake@v1
+      with:
+        xmake-version: latest
+
+    - name: Configure
+      run: xmake config --yes
+
+    - name: Test commonlibf4 sync
+      run: python Tests/test-sync-commonlibf4.py -v
+
+    - name: Test stable UI compatibility baseline
+      run: python Tests/test-ui-contract-generator.py -v
+
+    - name: Check generated UI contract headers
+      shell: pwsh
+      run: |
+        $generated = Join-Path $env:RUNNER_TEMP 'dmui-ui-contract'
+        python Tools/generate-ui-contract.py `
+          --schema schema/ui-contract.json `
+          --baseline-manifest schema/ui-contract.manifest.json `
+          --c-header "$generated/CUIAPI.h" `
+          --checked-header "$generated/UIChecked.generated.h" `
+          --host-bindings "$generated/UIBindings.generated.h"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        foreach ($name in 'CUIAPI.h', 'UIChecked.generated.h') {
+          $actual = [IO.File]::ReadAllText((Join-Path $generated $name)).Replace("`r`n", "`n")
+          $expected = [IO.File]::ReadAllText("include/DearModdingUI/$name").Replace("`r`n", "`n")
+          if ($actual -cne $expected) { throw "Generated contract differs from schema: $name" }
+        }
+
+    - name: Check Phosphor vocabulary generation
+      run: python Tools/GeneratePhosphorGlyphs.py --check
+
+    - name: Build header checks
+      run: xmake build --yes -vD api-header-checks
+
+    - name: Build example plugin
+      run: xmake build --yes example-plugin
+
+    # Clients build Debug too, where the MSVC STL rejects constexpr heap-backed headers.
+    - name: Build Debug header checks
+      run: |
+        xmake config --yes -m debug
+        xmake build --yes api-header-checks
+
+  sync-commonlibf4:
+    needs: build
+    if: >-
+      needs.build.result == 'success' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'Dear-Modding-FO4/DearModdingUI-API'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Verify credentials
+      env:
+        COMMONLIBF4_TOKEN: ${{ secrets.COMMONLIBF4_TOKEN }}
+      run: |
+        if [ -z "$COMMONLIBF4_TOKEN" ]; then
+          echo "::error title=Missing COMMONLIBF4_TOKEN::The commonlibf4 sync requires the COMMONLIBF4_TOKEN Actions secret."
+          exit 1
+        fi
+
+    - name: Check out built API commit
+      uses: actions/checkout@v6
+      with:
+        path: source
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Check out commonlibf4 main
+      uses: actions/checkout@v6
+      with:
+        repository: Dear-Modding-FO4/commonlibf4
+        ref: main
+        path: target
+        fetch-depth: 0
+        persist-credentials: true
+        submodules: false
+        token: ${{ secrets.COMMONLIBF4_TOKEN }}
+
+    - name: Advance commonlibf4 API pointer
+      run: >-
+        python3 source/Tools/sync-commonlibf4.py
+        --source source
+        --target target
+        --candidate "${GITHUB_SHA}"

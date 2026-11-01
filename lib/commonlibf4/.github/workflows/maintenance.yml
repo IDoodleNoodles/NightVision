@@ -1,0 +1,23 @@
+name: maintenance
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  generated-headers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: setup-python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - name: check generated headers
+        run: python res/scripts/generate_headers.py --check

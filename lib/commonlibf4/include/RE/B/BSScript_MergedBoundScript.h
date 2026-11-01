@@ -1,0 +1,19 @@
+#pragma once
+
+#include "RE/B/BSScript_BoundScript.h"
+#include "RE/B/BSTSmartPointer.h"
+
+namespace RE
+{
+	namespace BSScript
+	{
+		class MergedBoundScript
+		{
+		public:
+			// members
+			BSTSmartPointer<BoundScript> childScript;   // 00
+			BSTSmartPointer<BoundScript> parentScript;  // 08
+		};
+		static_assert(sizeof(MergedBoundScript) == 0x10);
+	}
+}
